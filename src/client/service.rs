@@ -3301,7 +3301,9 @@ fn query_context(
     cancellation_token: QueryCancellationToken,
 ) -> QueryContext {
     let mutation_idempotency_key = match request.mutation_idempotency_key.as_ref() {
-        Some(ClientMutationIdempotencyKey::ServerGenerated(value)) => value.clone(),
+        Some(ClientMutationIdempotencyKey::ServerGenerated(value)) => {
+            format!("{}{value}", crate::keys::SERVER_GENERATED_IDEMPOTENCY_KEY_PREFIX)
+        }
         Some(ClientMutationIdempotencyKey::CallerSupplied(value)) => principal_scoped_mutation_idempotency_key(session.principal(), value),
         None => request.query_id.clone(),
     };

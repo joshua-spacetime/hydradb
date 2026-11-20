@@ -1853,8 +1853,9 @@ impl GraphShard {
         let epoch = next_epoch_txn(&txn, cell_id).await?;
         let mut generations = WriteBackGenerations::default();
         apply_vertex_metadata_update_txn(&txn, cell_id, vertex_id, None, metadata, epoch, &mut generations).await?;
-        txn.put(
-            idem_key.as_bytes(),
+        put_idempotency_record(
+            &txn,
+            &idem_key,
             encode_vertex_create_idempotency(cell_id, vertex_id, fingerprint, epoch),
         )?;
         commit_txn_strict(txn, self.await_durable_writes).await?;
@@ -3029,8 +3030,9 @@ impl GraphShard {
                 incident_edges_deleted: edge_counts[pending_index],
                 relationships_deleted: relationship_counts[pending_index],
             };
-            txn.put(
-                keys::idempotency(cell_id, mode.idempotency_operation(), &idempotency_key).as_bytes(),
+            put_idempotency_record(
+                &txn,
+                &keys::idempotency(cell_id, mode.idempotency_operation(), &idempotency_key),
                 encode_vertex_delete_idempotency(cell_id, vertex_id, &result),
             )?;
             results[result_index] = Some(result);
@@ -3392,7 +3394,7 @@ impl GraphShard {
                 batches: 0,
                 already_dropped: true,
             };
-            txn.put(idem_key.as_bytes(), encode_cell_drop_idempotency(cell_id, idempotency_key, &result))?;
+            put_idempotency_record(&txn, &idem_key, encode_cell_drop_idempotency(cell_id, idempotency_key, &result))?;
             commit_txn_strict(txn, self.await_durable_writes).await?;
             return Ok(result);
         }
@@ -3446,7 +3448,7 @@ impl GraphShard {
         }
         txn.put(marker_key.as_bytes(), encode_u64(marker_epoch))?;
         txn.delete(pending_marker_key.as_bytes())?;
-        txn.put(idem_key.as_bytes(), encode_cell_drop_idempotency(cell_id, idempotency_key, &result))?;
+        put_idempotency_record(&txn, &idem_key, encode_cell_drop_idempotency(cell_id, idempotency_key, &result))?;
         commit_txn_strict(txn, self.await_durable_writes).await?;
         Ok(result)
     }
@@ -4996,8 +4998,9 @@ impl GraphShard {
             )
             .await?;
         }
-        txn.put(
-            idem_key.as_bytes(),
+        put_idempotency_record(
+            &txn,
+            &idem_key,
             encode_relationship_import_idempotency(idempotency_key, fingerprint, &result),
         )?;
         // Last so these outrank the blind invalidations the property-index
@@ -5264,8 +5267,9 @@ impl GraphShard {
             structural_edge_inserted,
             already_created: false,
         };
-        txn.put(
-            idem_key.as_bytes(),
+        put_idempotency_record(
+            &txn,
+            &idem_key,
             encode_relationship_create_idempotency(mutation, fingerprint, &result),
         )?;
         commit_txn_strict(txn, self.await_durable_writes).await?;
@@ -5675,8 +5679,9 @@ impl GraphShard {
                 epoch: current_epoch,
                 deleted: false,
             };
-            txn.put(
-                idem_key.as_bytes(),
+            put_idempotency_record(
+                &txn,
+                &idem_key,
                 encode_relationship_delete_idempotency(mutation, relationship_id, &result),
             )?;
             commit_txn_traced(
@@ -5721,8 +5726,9 @@ impl GraphShard {
         }
 
         let result = DeleteResult { epoch, deleted: true };
-        txn.put(
-            idem_key.as_bytes(),
+        put_idempotency_record(
+            &txn,
+            &idem_key,
             encode_relationship_delete_idempotency(mutation, relationship_id, &result),
         )?;
         commit_txn_traced(txn, self.await_durable_writes, &mutation.cell_id, &mutation.edge_type, epoch).await?;
@@ -6135,8 +6141,9 @@ impl GraphShard {
                     epoch: current_epoch,
                     deleted: false,
                 };
-                txn.put(
-                    idem_key.as_bytes(),
+                put_idempotency_record(
+                    &txn,
+                    &idem_key,
                     encode_relationship_delete_idempotency(mutation, *relationship_id, &result),
                 )?;
                 already_deleted = already_deleted.saturating_add(1);
@@ -6191,8 +6198,9 @@ impl GraphShard {
                 epoch: commit_epoch,
                 deleted: true,
             };
-            txn.put(
-                idem_key.as_bytes(),
+            put_idempotency_record(
+                &txn,
+                &idem_key,
                 encode_relationship_delete_idempotency(&mutation, relationship_id, &result),
             )?;
             deleted = deleted.saturating_add(1);
@@ -6515,7 +6523,7 @@ impl GraphShard {
                     epoch: existing_epoch,
                     already_existed: true,
                 };
-                txn.put(idem_key.as_bytes(), encode_commit_idempotency(mutation, &result))?;
+                put_idempotency_record(&txn, &idem_key, encode_commit_idempotency(mutation, &result))?;
                 commit_txn_traced(txn, self.await_durable_writes, &mutation.cell_id, &mutation.edge_type, result.epoch).await?;
                 return Ok(result);
             }
@@ -6556,7 +6564,7 @@ impl GraphShard {
             )?;
         }
         if existing_edge_epoch.is_some() {
-            txn.put(idem_key.as_bytes(), encode_commit_idempotency(mutation, &result))?;
+            put_idempotency_record(&txn, &idem_key, encode_commit_idempotency(mutation, &result))?;
             commit_txn_traced(txn, self.await_durable_writes, &mutation.cell_id, &mutation.edge_type, epoch).await?;
             return Ok(result);
         }
@@ -6602,7 +6610,7 @@ impl GraphShard {
         if let Some((in_degree_key, in_degree)) = in_degree {
             txn.put(in_degree_key.as_bytes(), encode_u64(in_degree))?;
         }
-        txn.put(idem_key.as_bytes(), encode_commit_idempotency(mutation, &result))?;
+        put_idempotency_record(&txn, &idem_key, encode_commit_idempotency(mutation, &result))?;
 
         commit_txn_traced(txn, self.await_durable_writes, &mutation.cell_id, &mutation.edge_type, epoch).await?;
         Ok(result)
@@ -6858,7 +6866,7 @@ impl GraphShard {
                     epoch: current_epoch,
                     deleted: false,
                 };
-                txn.put(idem_key.as_bytes(), encode_delete_idempotency(mutation, &result))?;
+                put_idempotency_record(&txn, &idem_key, encode_delete_idempotency(mutation, &result))?;
                 already_deleted = already_deleted.saturating_add(1);
                 results.push(result);
                 continue;
@@ -6914,7 +6922,7 @@ impl GraphShard {
                 )?;
             }
             *out_decrements.entry((mutation.edge_type.clone(), mutation.src)).or_insert(0) += 1;
-            txn.put(idem_key.as_bytes(), encode_delete_idempotency(mutation, &result))?;
+            put_idempotency_record(&txn, &idem_key, encode_delete_idempotency(mutation, &result))?;
             deleted = deleted.saturating_add(1);
             results.push(result);
         }
@@ -7023,7 +7031,7 @@ impl GraphShard {
                     epoch: current_epoch,
                     deleted: false,
                 };
-                txn.put(idem_key.as_bytes(), encode_delete_idempotency(mutation, &result))?;
+                put_idempotency_record(&txn, &idem_key, encode_delete_idempotency(mutation, &result))?;
                 commit_txn_traced(
                     txn,
                     self.await_durable_writes,
@@ -7042,7 +7050,7 @@ impl GraphShard {
                         epoch: current_epoch,
                         deleted: false,
                     };
-                    txn.put(idem_key.as_bytes(), encode_delete_idempotency(mutation, &result))?;
+                    put_idempotency_record(&txn, &idem_key, encode_delete_idempotency(mutation, &result))?;
                     commit_txn_traced(
                         txn,
                         self.await_durable_writes,
@@ -7092,7 +7100,7 @@ impl GraphShard {
             }
             txn.put(tombstone_key.as_bytes(), encode_u64(epoch))?;
             txn.put(out_degree_key.as_bytes(), encode_u64(out_degree))?;
-            txn.put(idem_key.as_bytes(), encode_delete_idempotency(mutation, &result))?;
+            put_idempotency_record(&txn, &idem_key, encode_delete_idempotency(mutation, &result))?;
             commit_txn_traced(txn, self.await_durable_writes, &mutation.cell_id, &mutation.edge_type, epoch).await?;
             return Ok(result);
         };
@@ -7146,7 +7154,7 @@ impl GraphShard {
         if let Some((in_degree_key, in_degree)) = in_degree {
             txn.put(in_degree_key.as_bytes(), encode_u64(in_degree))?;
         }
-        txn.put(idem_key.as_bytes(), encode_delete_idempotency(mutation, &result))?;
+        put_idempotency_record(&txn, &idem_key, encode_delete_idempotency(mutation, &result))?;
 
         commit_txn_traced(txn, self.await_durable_writes, &mutation.cell_id, &mutation.edge_type, epoch).await?;
         Ok(result)
@@ -7623,7 +7631,7 @@ impl GraphShard {
                     epoch,
                     already_existed: true,
                 };
-                txn.put(idem_key.as_bytes(), encode_commit_idempotency(mutation, &result))?;
+                put_idempotency_record(&txn, &idem_key, encode_commit_idempotency(mutation, &result))?;
                 already_existed = already_existed.saturating_add(1);
                 results.push(result);
                 continue;
@@ -7637,7 +7645,7 @@ impl GraphShard {
                     already_existed: true,
                 };
                 known_edges.insert(identity, current_epoch);
-                txn.put(idem_key.as_bytes(), encode_commit_idempotency(mutation, &result))?;
+                put_idempotency_record(&txn, &idem_key, encode_commit_idempotency(mutation, &result))?;
                 already_existed = already_existed.saturating_add(1);
                 results.push(result);
                 continue;
@@ -7659,7 +7667,7 @@ impl GraphShard {
                     already_existed: true,
                 };
                 known_edges.insert(identity, epoch);
-                txn.put(idem_key.as_bytes(), encode_commit_idempotency(mutation, &result))?;
+                put_idempotency_record(&txn, &idem_key, encode_commit_idempotency(mutation, &result))?;
                 already_existed = already_existed.saturating_add(1);
                 results.push(result);
                 continue;
@@ -7695,7 +7703,7 @@ impl GraphShard {
                     &edge_value,
                 )?;
             }
-            txn.put(idem_key.as_bytes(), encode_commit_idempotency(mutation, &result))?;
+            put_idempotency_record(&txn, &idem_key, encode_commit_idempotency(mutation, &result))?;
             known_edges.insert(identity, next_epoch);
             if endpoint_labels.is_none() {
                 inserted_endpoints.extend([mutation.src, mutation.dst]);
@@ -7955,8 +7963,9 @@ impl GraphShard {
             };
             txn.put(degree_key.as_bytes(), encode_u64(base + inserted))?;
         }
-        txn.put(
-            idem_key.as_bytes(),
+        put_idempotency_record(
+            &txn,
+            &idem_key,
             encode_bulk_import_idempotency(idempotency_key, fingerprint, &result),
         )?;
         commit_txn_strict(txn, self.await_durable_writes).await?;
@@ -8102,8 +8111,9 @@ impl GraphShard {
             // marker, so it carries no changes.
             self.mark_topology_change_txn(&txn, cell_id, edge_type, end_epoch, &[]).await?;
         }
-        txn.put(
-            idem_key.as_bytes(),
+        put_idempotency_record(
+            &txn,
+            &idem_key,
             encode_bulk_import_idempotency(idempotency_key, fingerprint, &result),
         )?;
 
@@ -8743,8 +8753,9 @@ async fn reserve_edge_delete_noops_txn(txn: &DbTransaction, cell_id: &str, mutat
         if let Some(value) = values.get(&key).and_then(Option::as_ref) {
             decode_delete_idempotency(&key, mutation, value)?;
         } else {
-            txn.put(
-                key.as_bytes(),
+            put_idempotency_record(
+                txn,
+                &key,
                 encode_delete_idempotency(
                     mutation,
                     &DeleteResult {
@@ -8896,4 +8907,20 @@ async fn read_txn_remote_traced(txn: &DbTransaction, key: &str, span: tracing::S
     let value = read_txn_remote(txn, key).instrument(span.clone()).await?;
     span.record("hydradb.read.found", value.is_some());
     Ok(value)
+}
+
+/// How long an idempotency record keyed by a server-generated key is kept.
+/// It only has to outlive work in flight, since no client can retry with it.
+const SERVER_GENERATED_IDEMPOTENCY_TTL_MS: u64 = 24 * 60 * 60 * 1000;
+
+/// Writes an idempotency record. Records for server-generated keys expire;
+/// records for caller-supplied keys are kept, as before.
+fn put_idempotency_record(txn: &DbTransaction, key: &str, value: impl AsRef<[u8]>) -> Result<()> {
+    let ttl = if keys::is_server_generated_idempotency(key) {
+        slatedb::config::Ttl::ExpireAfterMillis(SERVER_GENERATED_IDEMPOTENCY_TTL_MS)
+    } else {
+        slatedb::config::Ttl::Default
+    };
+    txn.put_with_options(key.as_bytes(), value, &slatedb::config::PutOptions { ttl })?;
+    Ok(())
 }

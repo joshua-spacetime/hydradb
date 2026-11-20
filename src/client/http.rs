@@ -695,6 +695,7 @@ async fn execute_query_inner(
     let session = authenticate_http(&state.service, headers)?;
     let scope = http_graph_scope(headers, graph_id, state.allow_default_namespace)?;
     let target = ClientQueryTarget::new(scope, body.cell_id).map_err(HttpApiError::from_graph)?;
+    let server_generated_query_id = body.query_id.is_none();
     let query_id = body
         .query_id
         .unwrap_or_else(|| format!("http-query-{}", NEXT_HTTP_QUERY_ID.fetch_add(1, Ordering::Relaxed)));
@@ -719,7 +720,10 @@ async fn execute_query_inner(
             .map(|(name, value)| Ok((name.clone(), http_typed_parameter_to_query_value(name, value)?)))
             .collect::<std::result::Result<BTreeMap<_, _>, HttpApiError>>()?,
     );
-    let mut request = ClientQueryRequest::new(target, query_id, body.query).with_query_parameters(parameters);
+    let mut request = ClientQueryRequest::new(target, query_id.clone(), body.query).with_query_parameters(parameters);
+    if server_generated_query_id {
+        request = request.with_server_generated_mutation_idempotency_key(query_id);
+    }
     let page_size = body.page_size.unwrap_or(state.default_page_size);
     let cursor = body.cursor.map(QueryCursorToken::new);
     #[cfg(feature = "query-telemetry")]

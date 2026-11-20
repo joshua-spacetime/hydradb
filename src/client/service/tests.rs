@@ -539,7 +539,7 @@ fn query_context_separates_mutation_identity_from_the_query_handle() {
     );
 
     assert_eq!(request.query_id, "bolt-2-query-459");
-    assert_eq!(context.idempotency_key, "bolt-mutation-v1-01K00000000000000000000000");
+    assert_eq!(context.idempotency_key, "server-v1-bolt-mutation-v1-01K00000000000000000000000");
 }
 
 #[test]
