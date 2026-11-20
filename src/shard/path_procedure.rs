@@ -1115,6 +1115,7 @@ impl GraphShard {
                             scanned_records: visits,
                             operation: "native_path_edges",
                         }),
+                        true,
                     ),
                 )
                 .await?;

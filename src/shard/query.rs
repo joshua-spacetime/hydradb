@@ -339,7 +339,7 @@ impl GraphShard {
         src: VertexId,
         topology_sequence: StorageSequence,
     ) -> Result<Vec<VertexId>> {
-        self.out_neighbors_in_storage_snapshot_inner(snapshot, cell_id, edge_type, src, topology_sequence, None)
+        self.out_neighbors_in_storage_snapshot_inner(snapshot, cell_id, edge_type, src, topology_sequence, None, true)
             .await
     }
 
@@ -366,6 +366,7 @@ impl GraphShard {
                 scanned_records: &mut scanned_records,
                 operation: "query_out_neighbors_storage_records",
             }),
+            true,
         )
         .await
     }
@@ -430,6 +431,7 @@ impl GraphShard {
             .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn out_neighbors_in_storage_snapshot_inner(
         &self,
         snapshot: &GraphStorageSnapshot,
@@ -438,6 +440,7 @@ impl GraphShard {
         src: VertexId,
         topology_sequence: StorageSequence,
         scan_budget: Option<StorageNeighborScanBudget<'_>>,
+        segments_possible: bool,
     ) -> Result<Vec<VertexId>> {
         let budget = scan_budget.as_ref().map(|scan| scan.query);
         validate_component("cell_id", cell_id)?;
@@ -540,7 +543,15 @@ impl GraphShard {
             }
             Ok::<_, GraphError>(newest)
         };
-        let (mut neighbors, tombstones, segment_destinations) = futures::try_join!(edges, tombstones, segments)?;
+        // Without segments, the segment and tombstone scans cannot change the
+        // result, because tombstones only hide destinations stored in
+        // segments. Skipping them saves two of the three scans per source on
+        // edge types that were never bulk imported.
+        let (mut neighbors, tombstones, segment_destinations) = if segments_possible {
+            futures::try_join!(edges, tombstones, segments)?
+        } else {
+            (edges.await?, BTreeMap::new(), BTreeMap::new())
+        };
         for (dst, sequence) in segment_destinations {
             if segment_edge_visible(sequence, tombstones.get(&dst).copied()) {
                 neighbors.insert(dst);
@@ -7874,9 +7885,26 @@ impl GraphShard {
             .collect::<BTreeMap<_, _>>();
         let mut scanned_edges = 0_u64;
 
+        // Only bulk imports write segments, so an edge type that was never bulk
+        // imported has none, and one check per batch replaces a segment scan
+        // and a tombstone scan for every source. When the edge type does have
+        // segments, the check costs one scan that stops at the first key. It
+        // reads the same snapshot as the reads below, so it cannot miss a
+        // segment that they would find.
+        let segments_possible = out_segments_exist(&snapshot.storage_snapshot, cell_id, edge_type).await?;
         for source in requested.iter().copied() {
             budget.check("out_neighbors_batch_snapshot_source")?;
-            let neighbors = snapshot.out_neighbors(edge_type, source).await?;
+            let neighbors = self
+                .out_neighbors_in_storage_snapshot_inner(
+                    &snapshot.storage_snapshot,
+                    cell_id,
+                    edge_type,
+                    source,
+                    snapshot.read_epoch,
+                    None,
+                    segments_possible,
+                )
+                .await?;
             scanned_edges = scanned_edges.saturating_add(neighbors.len() as u64);
             ensure_limit("out_neighbors_batch_scanned_edges", scanned_edges, self.limits.max_query_scan_edges)?;
             by_source.entry(source).or_default().extend(neighbors);
@@ -12000,4 +12028,13 @@ fn relationship_rows_for_edge(
         ));
     }
     rows
+}
+
+/// Whether any outgoing adjacency segment of `edge_type` exists in `snapshot`.
+async fn out_segments_exist(snapshot: &GraphStorageSnapshot, cell_id: &str, edge_type: &str) -> Result<bool> {
+    let prefix = keys::out_segment_edge_type_prefix(cell_id, edge_type);
+    let mut iter = snapshot
+        .scan_prefix_with_options(prefix.as_bytes(), .., &remote_scan_options_for_expected_items(1))
+        .await?;
+    Ok(iter.next().await?.is_some())
 }

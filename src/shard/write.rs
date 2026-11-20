@@ -7726,6 +7726,7 @@ impl GraphShard {
         let mut known_edges = BTreeMap::<(String, VertexId, VertexId), StorageSequence>::new();
         let mut validated_endpoints = BTreeSet::<(VertexId, String)>::new();
         let mut segment_edges_by_type_src = BTreeMap::<(String, VertexId), BTreeMap<VertexId, StorageSequence>>::new();
+        let mut edge_types_with_segments = BTreeMap::<String, bool>::new();
         let mut out_increments = BTreeMap::<(String, VertexId), u64>::new();
         let mut in_increments = BTreeMap::<(String, VertexId), u64>::new();
         let write_reverse_index = self.writes_reverse_index();
@@ -7802,7 +7803,22 @@ impl GraphShard {
             let segment_epoch = match segment_edges_by_type_src.get(&segment_cache_key) {
                 Some(edges) => edges.get(&mutation.dst).copied(),
                 None => {
-                    let edges = out_segment_edges_for_src_txn(&txn, cell_id, &mutation.edge_type, mutation.src, current_epoch).await?;
+                    // A bulk-imported edge is stored only in a segment, with no
+                    // edge key, so the segments have to be searched too or the
+                    // edge would be written twice. An edge type that was never
+                    // bulk imported has no segments, so checking that once per
+                    // type saves the search for every source. The check and the
+                    // search use the same transaction, so they always agree.
+                    if !edge_types_with_segments.contains_key(&mutation.edge_type) {
+                        let prefix = keys::out_segment_edge_type_prefix(cell_id, &mutation.edge_type);
+                        let has_segments = txn.scan_prefix(prefix.as_bytes(), ..).await?.next().await?.is_some();
+                        edge_types_with_segments.insert(mutation.edge_type.clone(), has_segments);
+                    }
+                    let edges = if edge_types_with_segments[&mutation.edge_type] {
+                        out_segment_edges_for_src_txn(&txn, cell_id, &mutation.edge_type, mutation.src, current_epoch).await?
+                    } else {
+                        BTreeMap::new()
+                    };
                     let epoch = edges.get(&mutation.dst).copied();
                     segment_edges_by_type_src.insert(segment_cache_key, edges);
                     epoch
